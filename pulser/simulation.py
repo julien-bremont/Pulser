@@ -256,7 +256,6 @@ class Simulation:
         else:
             # Van der Waals Interaction Terms
             qobj_list = [make_vdw_term()] if self._size > 1 else []
-
         # Time dependent terms:
         for addr in self.samples:
             for basis in self.samples[addr]:
