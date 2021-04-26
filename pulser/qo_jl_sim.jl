@@ -2,7 +2,7 @@ using QuantumOptics
 
 function build_operator(op, b, qindex, global_op)
     if global_op
-        return sum(build_operator(op, b, q, false) for q in qindex)
+        return Base.sum([build_operator(op, b, [q], false) for q in qindex])
     else
         return embed(b, qindex, op)
     end
@@ -16,8 +16,8 @@ function tensor_basis(b, N)
     end
 end
 
-function product_list(list)
-    result = 1
+function product_list(list, b)
+    result = identityoperator(b)
     for x in list
         result *= x
     end
@@ -32,10 +32,10 @@ function tensor_list(list)
     return result
 end
 
-function build_hamiltonian(terms)
-    f = function(t)
-        return sum((t * o) + dagger(t * o) for (o, c) in terms) end
-    return f
+function convert_ham(f)
+    function h(t, psi)
+        return f(t)
+    end
 end
 
 function test(op, c)
