@@ -20,7 +20,7 @@ from copy import deepcopy
 from julia import QuantumOptics as qo
 from julia import Main, Base
 from pulser import Pulse, Sequence
-from pulser.simresults import CleanResults
+from pulser.simresults import CleanResults, NoisyResults
 from collections import namedtuple
 from scipy.interpolate import interp1d
 
@@ -136,7 +136,6 @@ class Simulation:
             self.basis_name = 'ground-rydberg'
             self.dim = 2
             self.jl_basis = qo.NLevelBasis(2)
-            basis = ['r', 'g']
             basis_index = {'r': 1, 'g': 2}
             projectors = ['gr', 'rr', 'gg']
         elif (not self.samples['Global']['ground-rydberg']
@@ -144,20 +143,18 @@ class Simulation:
             self.basis_name = 'digital'
             self.dim = 2
             self.jl_basis = qo.NLevelBasis(2)
-            basis = ['g', 'h']
             basis_index = {'g': 1, 'h': 2}
             projectors = ['hg', 'hh', 'gg']
         else:
             self.basis_name = 'all'  # All three states
             self.dim = 3
             self.jl_basis = qo.NLevelBasis(3)
-            basis = ['r', 'g', 'h']
             basis_index = {'r': 1, 'g': 2, 'h': 3}
             projectors = ['gr', 'hg', 'rr', 'gg', 'hh', 'hr']
         self.tensor_jl_basis = Main.tensor_basis(self.jl_basis, self._size)
         # Julia arrays start at 1
-        self.basis = {b: qo.nlevelstate(self.jl_basis, i+1) for
-                      i, b in enumerate(basis)}
+        self.basis = {b: qo.nlevelstate(self.jl_basis, i) for
+                      b, i in basis_index.items()}
         self.op_matrix = {'I': qo.identityoperator(self.jl_basis)}
 
         for proj in projectors:
@@ -169,9 +166,15 @@ class Simulation:
     def _build_operator(self, op_id, *qubit_ids, global_op=False):
         """Create qo.jl operator with non trivial action at qubit_ids."""
         op = self.op_matrix[op_id]
-        qindex = [self._qid_index.get(id)+1 for id in qubit_ids]
+        # WARNING : qo.jl treats tensor products the reverse way qutip does,
+        # so we reverse that order here : to act on qubit i, we act on
+        # the n-i one in qo.jl, since the indices go from 1 to n.
+        qindex = [self._size - self._qid_index.get(id) for id in qubit_ids]
         op_list = [op for _ in range(len(qindex))]
         b = self.tensor_jl_basis
+
+        if self._size == 1:
+            return op
 
         if global_op:
             return Base.sum(
@@ -324,7 +327,7 @@ class Simulation:
             spam_dict={"eta": 0.005, "epsilon": 0.01, "epsilon_prime": 0.05},
             sampling_rate_result=5,
             **options):
-        """Simulate the sequence using QuTiP's solvers.
+        """Simulate the sequence using qo.jl's solvers.
 
         Keyword Args:
             initial_state (array): The initial quantum state of the
@@ -346,9 +349,16 @@ class Simulation:
                 Is a CleanResults object if spam = False, and a NoisyResults
                 one if spam = True.
         """
-        psi0 = Main.tensor_list([self.basis['g'] for _ in range(self._size)])
+        if initial_state is None:
+            initial_state = Main.tensor_list(
+                [self.basis['g'] for _ in range(self._size)])
+        else:
+            # Convert in qo.jl Ket
+            initial_state = qo.Ket(self.tensor_jl_basis,
+                                   [x for [x] in initial_state.full()])
         # convert the python hamiltonian to a Julia-compatible one
         h = Main.convert_ham(self._hamiltonian)
+
         tout, psit = qo.timeevolution.schroedinger_dynamic(
-            self._times[0:-1:sampling_rate_result], psi0, h)
+            self._times[0:-1:sampling_rate_result], initial_state, h)
         return self.qo_to_qutip(psit)
