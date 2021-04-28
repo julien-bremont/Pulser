@@ -15,13 +15,14 @@
 import itertools
 import numpy as np
 import qutip
+import time
 
 from copy import deepcopy
 from julia import QuantumOptics as qo
 from julia import Main, Base
-from pulser import Pulse, Sequence
+from pulser import Pulse, Sequence, Register
 from pulser.simresults import CleanResults, NoisyResults
-from collections import namedtuple
+from collections import Counter, namedtuple
 from scipy.interpolate import interp1d
 
 _TimeSlot = namedtuple('_TimeSlot', ['type', 'ti', 'tf', 'targets'])
@@ -264,17 +265,22 @@ class Simulation:
         def _build_hamiltonian(terms):
             def f(t):
                 # 0 or vdw operator, depending on the basis and size
+                start = time.time()
                 h = self.vdw_op
                 for [o, c] in terms:
                     coef = complex(c(t))
                     h = Base.sum([h, Base.prod([coef, o])])
-                # vdw term
+
                 h = Base.sum([h, qo.dagger(h)])
+
+                end = time.time()
+                print(f"Temps de construction ham : {end - start}")
                 return h
             return f
 
         # Time independent terms:
         if self.basis_name != 'digital' and self._size > 1:
+            print("vdw")
             self.vdw_op = make_vdw_term()
         else:
             # 0 operator : needed for consistency
@@ -325,7 +331,7 @@ class Simulation:
     def run(self, initial_state=None, progress_bar=None, spam=False, t=-1,
             meas_basis="ground-rydberg",
             spam_dict={"eta": 0.005, "epsilon": 0.01, "epsilon_prime": 0.05},
-            sampling_rate_result=5,
+            sampling_rate_result=10,
             **options):
         """Simulate the sequence using qo.jl's solvers.
 
@@ -349,6 +355,12 @@ class Simulation:
                 Is a CleanResults object if spam = False, and a NoisyResults
                 one if spam = True.
         """
+        if spam:
+            return NoisyResults(
+                self.detection_SPAM(spam_dict, t=t,
+                                    meas_basis=meas_basis),
+                2, self._size, self.basis_name, meas_basis)
+
         if initial_state is None:
             initial_state = Main.tensor_list(
                 [self.basis['g'] for _ in range(self._size)])
@@ -359,6 +371,135 @@ class Simulation:
         # convert the python hamiltonian to a Julia-compatible one
         h = Main.convert_ham(self._hamiltonian)
 
+        start = time.time()
+
         tout, psit = qo.timeevolution.schroedinger_dynamic(
             self._times[0:-1:sampling_rate_result], initial_state, h)
-        return self.qo_to_qutip(psit)
+
+        end = time.time()
+
+        print(f"Runtime of the program is {end - start}")
+        return CleanResults(self.qo_to_qutip(psit), self.dim, self._size,
+                            self.basis_name, meas_basis)
+
+    def detection_SPAM(self, spam, t=-1, N_samples=1000,
+                       meas_basis='ground-rydberg'):
+        """
+            Args :
+                spam (dictionary): Dictionary of the SPAM error parameters eta,
+                    epsilon, epsilon_prime
+            Returns:
+                Dictionary: Probability dictionary when
+                    accounting for SPAM errors.
+        """
+        N = self._size
+        eta = spam["eta"]
+        eps = spam["epsilon"]
+        seq = self._seq
+
+        def _seq_without_k(self, qid):
+            """
+                Returns:
+                    Sequence: original sequence with a modified register :
+                        no more atom qid (= qubit ID), and all pulses
+                        containing qid are changed not to target k anymore
+            """
+            seq_k = deepcopy(seq)
+            # We delete qubit k from local pulses containing it as target
+            for channel in seq_k.declared_channels:
+                addr = seq_k.declared_channels[channel].addressing
+                if addr == 'Local':
+                    for i, slot in enumerate(seq_k._schedule[channel]):
+                        if isinstance(slot.type, Pulse):
+                            for qubit in slot.targets:  # Allow multiaddressing
+                                # We remove the pulse if q_k was the only qubit
+                                # targeted by the pulse
+                                if qubit == qid and len(slot.targets) == 1:
+                                    seq_k._schedule[channel][i] = _TimeSlot(
+                                        'delay', slot.ti, slot.tf,
+                                        slot.targets)
+                                # If the pulse targets other qubits, we only
+                                # remove q_k
+                                elif qubit == qid:
+                                    seq_k._schedule[channel][i].targets.remove(
+                                        qid)
+            dict_k = seq_k.qubit_info
+            dict_k.pop(qid)
+            seq_k._register = Register(dict_k)
+            return seq_k
+
+        def _evolve_without_k(self, qid):
+            """
+                Returns:
+                    Counter: sample of the state of the system that evolved
+                    without atom qid, taking into account detection errors
+                    only, at time t (= -1 by default)
+            """
+            sim_k = Simulation(_seq_without_k(self, qid), self.sampling_rate)
+            results_k = sim_k.run()
+            return results_k.sampling_with_detection_errors(
+                spam, t, meas_basis, N_samples)
+
+        def _add_atom_k(self, counter_k_missing, k):
+            """
+                Args :
+                    counter_k_missing (Counter): Counter of bitstrings of
+                    length N-1 corresponding to simulations run without atom k
+                    k (int): Number of the atom to add
+                Returns:
+                    the dictionary corresponding to the detection of atom k
+                    in states g or r (ground-rydberg for now), with probability
+                    epsilon to be measured as r, 1-epsilon to be measured as g
+            """
+            counter_k_added = Counter()
+            for b_k, v in counter_k_missing.items():
+                bitstring_0 = b_k[:k] + str(0) + b_k[k:]
+                bitstring_1 = b_k[:k] + str(1) + b_k[k:]
+                counter_k_added[bitstring_0] += (1-eps) * v
+                counter_k_added[bitstring_1] += eps * v
+            return counter_k_added
+
+        def _build_p_faulty(self):
+            """
+                Returns:
+                    Counter: probability distribution for faulty atoms.
+            """
+            prob_faulty = Counter()
+            for qid, k in self._qid_index.items():
+                counter_k_missing = _evolve_without_k(self, qid)
+                counter_k_added = _add_atom_k(self, counter_k_missing, k)
+                prob_faulty += counter_k_added
+            # Going from number to probability
+            for b, v in prob_faulty.items():
+                prob_faulty[b] /= (N * N_samples)
+            return prob_faulty
+
+        def _build_total_p(self):
+            """
+                Returns:
+                    Counter: total probability dictionary, counting both prep
+                    errors and no prep errors situations
+            """
+            no_prep_errors_results = self.run()
+            detect_no_prep_errors = \
+                no_prep_errors_results.sampling_with_detection_errors(
+                    spam, t=t, meas_basis=meas_basis)
+            prob_total = Counter()
+            # Can't simulate an empty register... This part for 1 qubit only
+            if N == 1:
+                prob_total["0"] = eta * (1 - eps) + (1 - eta) * \
+                    (detect_no_prep_errors["0"] / N_samples)
+                prob_total["1"] = eta * eps + (1 - eta) * \
+                    (detect_no_prep_errors["1"] / N_samples)
+                return prob_total
+            # From now on : several qubits
+            prob_faulty = _build_p_faulty(self)
+            for k in prob_faulty.keys():
+                prob_faulty[k] *= eta
+            # Need to go from detection number to probability
+            for k in detect_no_prep_errors.keys():
+                detect_no_prep_errors[k] *= (1-eta) / N_samples
+            prob_total = prob_faulty + detect_no_prep_errors
+            return prob_total
+
+        return _build_total_p(self)
