@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import itertools
 import numpy as np
 import qutip
-import time
 
 from copy import deepcopy
 from julia import QuantumOptics as qo
@@ -23,7 +21,6 @@ from julia import Main, Base
 from pulser import Pulse, Sequence, Register
 from pulser.simresults import CleanResults, NoisyResults
 from collections import Counter, namedtuple
-from scipy.interpolate import interp1d
 
 _TimeSlot = namedtuple('_TimeSlot', ['type', 'ti', 'tf', 'targets'])
 
@@ -130,7 +127,6 @@ class Simulation:
 
     def _build_basis_and_op_matrices(self):
         """Determine dimension, basis and projector operators."""
-
         # No samples => Empty dict entry => False
         if (not self.samples['Global']['digital']
                 and not self.samples['Local']['digital']):
@@ -173,13 +169,11 @@ class Simulation:
         qindex = [self._size - self._qid_index.get(id) for id in qubit_ids]
         op_list = [op for _ in range(len(qindex))]
         b = self.tensor_jl_basis
-
         if self._size == 1:
             return op
-
         if global_op:
-            return Base.sum(
-                [self._build_operator(op_id, id) for id in self._qdict])
+            return Base.sum([self._build_operator(op_id, id) for
+                             id in self._qdict])
         else:
             return qo.embed(b, qindex, op_list)
 
@@ -198,19 +192,11 @@ class Simulation:
             assign the local operator "sigma_rr" at each pair. The units are
             given so that the coefficient includes a 1/hbar factor.
             """
-            vdw = Base.prod([qo.identityoperator(self.tensor_jl_basis), 0])
-            # Get every pair without duplicates
-            for q1, q2 in itertools.combinations(self._qdict.keys(), r=2):
-                dist = np.linalg.norm(
-                    self._qdict[q1] - self._qdict[q2])
-                U = 0.5 * self._seq._device.interaction_coeff / dist**6
-                # + doesn't work...
-                vdw = Base.sum([vdw,
-                               Base.prod([U,
-                                          self._build_operator(
-                                            'sigma_rr',
-                                            q1, q2)])])
-            return vdw
+            # return vdw
+            U = self._seq._device.interaction_coeff
+            return Main.build_vdw(self._qdict, self.op_matrix['sigma_rr'], U,
+                                  self._qid_index, self.tensor_jl_basis,
+                                  self._size)
 
         def build_coeffs_ops(basis, addr):
             """Build coefficients and operators for the hamiltonian QobjEvo."""
@@ -221,7 +207,6 @@ class Simulation:
                 op_ids = ['sigma_gr', 'sigma_rr']
             elif basis == 'digital':
                 op_ids = ['sigma_hg', 'sigma_gg']
-
             terms = []
             if addr == 'Global':
                 coeffs = [0.5*samples['amp'] * np.exp(-1j * samples['phase']),
@@ -232,7 +217,8 @@ class Simulation:
                         if op_id not in operators:
                             operators[op_id] =\
                                 self._build_operator(op_id, global_op=True)
-                        terms.append([operators[op_id], adapt(coeff)])
+                        terms.append((operators[op_id],
+                                     adapt(coeff).astype(complex)))
             elif addr == 'Local':
                 for q_id, samples_q in samples.items():
                     if q_id not in operators:
@@ -245,78 +231,27 @@ class Simulation:
                             if op_id not in operators[q_id]:
                                 operators[q_id][op_id] = \
                                     self._build_operator(op_id, q_id)
-                            terms.append([operators[q_id][op_id],
-                                          adapt(coeff)])
-
+                            terms.append((operators[q_id][op_id],
+                                          adapt(coeff).astype(complex)))
             self.operators[addr][basis] = operators
             return terms
 
-        def _interpolate_coeffs(op_coef_list):
-            # op_coef_list = terms
-            """Each coefficient is now a function interpolated from the fixed
-                values already given"""
-            times = self._times
-            terms_interp = []
-            for [op, coef] in op_coef_list:
-                interp_coef = interp1d(times, coef)
-                terms_interp.append([op, interp_coef])
-            return terms_interp
-
-        def _build_hamiltonian(terms):
-            def f(t):
-                # 0 or vdw operator, depending on the basis and size
-                start = time.time()
-                h = self.vdw_op
-                for [o, c] in terms:
-                    coef = complex(c(t))
-                    h = Base.sum([h, Base.prod([coef, o])])
-
-                h = Base.sum([h, qo.dagger(h)])
-
-                end = time.time()
-                print(f"Temps de construction ham : {end - start}")
-                return h
-            return f
-
         # Time independent terms:
         if self.basis_name != 'digital' and self._size > 1:
-            print("vdw")
             self.vdw_op = make_vdw_term()
         else:
             # 0 operator : needed for consistency
-            self.vdw_op = Base.prod(
-                [0, qo.identityoperator(self.tensor_jl_basis)])
-
+            self.vdw_op = Base.product(
+                0, qo.identityoperator(self.tensor_jl_basis))
         terms = []
         # Time dependent terms:
         for addr in self.samples:
             for basis in self.samples[addr]:
                 if self.samples[addr][basis]:
                     terms += build_coeffs_ops(basis, addr)
-
         self._times = adapt(np.arange(self._tot_duration,
                                       dtype=np.double)/1000)
-
-        interp_terms = _interpolate_coeffs(terms)
-        self._hamiltonian = _build_hamiltonian(interp_terms)
-
-    def get_hamiltonian(self, time):
-        """Get the Hamiltonian created from the sequence at a fixed time.
-
-        Args:
-            time (float): The specific time in which we want to extract the
-                    Hamiltonian (in ns).
-
-        Returns:
-            Qutip.Qobj: A new Qobj for the Hamiltonian with coefficients
-                    extracted from the effective sequence (determined by
-                    `self.sampling_rate`) at the specified time.
-        """
-        if time > 1000 * self._times[-1]:
-            raise ValueError("Provided time is larger than sequence duration.")
-        if time < 0:
-            raise ValueError("Provided time is negative.")
-        return self._hamiltonian(time/1000)  # Creates new Qutip.Qobj
+        self._terms = terms
 
     def qo_to_qutip(self, state_list):
         """Takes a list of states, represented by a ket or a density matrix
@@ -325,7 +260,8 @@ class Simulation:
             artificially to inform qutip of the tensor product nature."""
         return [qutip.Qobj(inpt=x.data,
                 dims=[[self.dim for _ in range(self._size)],
-                      [1 for _ in range(self._size)]]) for x in state_list]
+                      [1 for _ in range(self._size)]]).unit()
+                for x in state_list]
 
     # Run Simulation Evolution using Qutip
     def run(self, initial_state=None, progress_bar=None, spam=False, t=-1,
@@ -368,17 +304,17 @@ class Simulation:
             # Convert in qo.jl Ket
             initial_state = qo.Ket(self.tensor_jl_basis,
                                    [x for [x] in initial_state.full()])
-        # convert the python hamiltonian to a Julia-compatible one
-        h = Main.convert_ham(self._hamiltonian)
+        # empty sequence : used in Noisy simulations
+        if not self._terms:
+            return CleanResults(self.qo_to_qutip([initial_state for _ in
+                                self._times[0:-1:sampling_rate_result]]),
+                                self.dim, self._size,
+                                self.basis_name, meas_basis)
+        print(self._terms)
+        tout, psit = Main.pulser_schroedinger(
+            self._times[0:-1:sampling_rate_result], self._times,
+            initial_state, self._terms, self.vdw_op, self.tensor_jl_basis)
 
-        start = time.time()
-
-        tout, psit = qo.timeevolution.schroedinger_dynamic(
-            self._times[0:-1:sampling_rate_result], initial_state, h)
-
-        end = time.time()
-
-        print(f"Runtime of the program is {end - start}")
         return CleanResults(self.qo_to_qutip(psit), self.dim, self._size,
                             self.basis_name, meas_basis)
 
