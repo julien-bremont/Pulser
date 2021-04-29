@@ -215,7 +215,7 @@ class NoisyResults(SimulationResults):
         # Invert the order ->  [00, 01, 10, 11] correspondence
         # VERIFIED : order already reversed in detection_SPAM when
         # producing a NoiseResult !
-        weights = probs[::-1] if meas_basis == 'digital' else probs
+        weights = probs if meas_basis == 'digital' else probs
 
         dist = np.random.multinomial(N_samples, weights)
         return Counter(

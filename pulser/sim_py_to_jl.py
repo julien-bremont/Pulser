@@ -192,7 +192,6 @@ class Simulation:
             assign the local operator "sigma_rr" at each pair. The units are
             given so that the coefficient includes a 1/hbar factor.
             """
-            # return vdw
             U = self._seq._device.interaction_coeff
             return Main.build_vdw(self._qdict, self.op_matrix['sigma_rr'], U,
                                   self._qid_index, self.tensor_jl_basis,
@@ -217,6 +216,8 @@ class Simulation:
                         if op_id not in operators:
                             operators[op_id] =\
                                 self._build_operator(op_id, global_op=True)
+                        # we need to convert into complex numbers when passing
+                        # the coefficients to Julia
                         terms.append((operators[op_id],
                                      adapt(coeff).astype(complex)))
             elif addr == 'Local':
@@ -241,8 +242,8 @@ class Simulation:
             self.vdw_op = make_vdw_term()
         else:
             # 0 operator : needed for consistency
-            self.vdw_op = Base.product(
-                0, qo.identityoperator(self.tensor_jl_basis))
+            self.vdw_op = Base.prod([
+                0, qo.identityoperator(self.tensor_jl_basis)])
         terms = []
         # Time dependent terms:
         for addr in self.samples:
@@ -310,7 +311,6 @@ class Simulation:
                                 self._times[0:-1:sampling_rate_result]]),
                                 self.dim, self._size,
                                 self.basis_name, meas_basis)
-        print(self._terms)
         tout, psit = Main.pulser_schroedinger(
             self._times[0:-1:sampling_rate_result], self._times,
             initial_state, self._terms, self.vdw_op, self.tensor_jl_basis)

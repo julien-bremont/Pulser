@@ -15,7 +15,6 @@
 import itertools
 import qutip
 import numpy as np
-import time
 from copy import deepcopy
 
 from pulser import Pulse, Sequence, Register
@@ -251,8 +250,6 @@ class Simulation:
             self.operators[addr][basis] = operators
             return terms
 
-        start = time.time()
-
         # Time independent term:
         if self.basis_name == 'digital':
             qobj_list = []
@@ -276,10 +273,6 @@ class Simulation:
         ham = ham + ham.dag()
 
         ham.compress()
-
-        end = time.time()
-
-        print(f"Ham building time : {end - start}")
 
         self._hamiltonian = ham
 
