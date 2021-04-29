@@ -210,14 +210,7 @@ class NoisyResults(SimulationResults):
         bitstrings = [np.binary_repr(k, N) for k in range(2**N)]
         probs = [self._states[b] for b in bitstrings]
 
-        # State vector ordered with r first for 'ground_rydberg'
-        # e.g. N=2: [rr, rg, gr, gg] -> [11, 10, 01, 00]
-        # Invert the order ->  [00, 01, 10, 11] correspondence
-        # VERIFIED : order already reversed in detection_SPAM when
-        # producing a NoiseResult !
-        weights = probs if meas_basis == 'digital' else probs
-
-        dist = np.random.multinomial(N_samples, weights)
+        dist = np.random.multinomial(N_samples, probs)
         return Counter(
                {np.binary_repr(i, N): dist[i] for i in np.nonzero(dist)[0]})
 
