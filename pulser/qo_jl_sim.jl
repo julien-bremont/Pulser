@@ -3,7 +3,7 @@ using LinearAlgebra
 using Interpolations
 using Combinatorics
 
-function tensor_basis(b, N)
+function tensor_basis(b::NLevelBasis, N::Int64)
     return b^N
 end
 
@@ -21,21 +21,22 @@ function build_vdw(qdict::Dict, sigma_rr::T, U::Float64, qid_index::Dict, b::Com
     return Base.sum(terms)
 end
 
-function pulser_schroedinger(tspan, times_interp, psi0, terms, vdw)
-    function interp_terms()
-        """
-            Interpolate the given coefficients to plug them into the
-            schroedinger simulation
-        """
-        step = times_interp[2] - times_interp[1]
-        range = times_interp[1]:step:(times_interp[end])
-        range2 = times_interp[1]:step:(times_interp[end] - step)
-        # we remove one step at the end to account for rounding errors in
-        # waveform preparations
-        itp_terms = [length(range) == length(c) ? scale(interpolate(c, BSpline(Cubic(Line(OnGrid())))), range) : scale(interpolate(c, BSpline(Cubic(Line(OnGrid())))), range2) for (o, c) ∈ terms]
-        return itp_terms
-    end
-    coeffs = interp_terms()
+function interp_terms(times_interp::Vector{Float64}, terms::Vector{Tuple{T, Vector{ComplexF64}}}) where T<:AbstractOperator
+    """
+        Interpolate the given coefficients to plug them into the
+        schroedinger simulation
+    """
+    step = times_interp[2] - times_interp[1]
+    range = times_interp[1]:step:(times_interp[end])
+    range2 = times_interp[1]:step:(times_interp[end] - step)
+    # we remove one step at the end to account for rounding errors in
+    # waveform preparations
+    itp_terms = [length(range) == length(c) ? scale(interpolate(c, BSpline(Cubic(Line(OnGrid())))), range) : scale(interpolate(c, BSpline(Cubic(Line(OnGrid())))), range2) for (o, c) ∈ terms]
+    return itp_terms
+end
+
+function pulser_schroedinger(tspan::Vector{Float64}, times_interp::Vector{Float64}, psi0::Ket, terms::Vector{Tuple{T, Vector{ComplexF64}}}, vdw::T) where T<:AbstractOperator
+    coeffs = interp_terms(times_interp, terms)
     Hterms = [o for (o, c) ∈ terms]
     # hermitian conjugates
     append!(Hterms, [copy(dagger(o)) for o ∈ Hterms])
@@ -43,7 +44,7 @@ function pulser_schroedinger(tspan, times_interp, psi0, terms, vdw)
     append!(coeffs_cache, [conj(x) for x ∈ coeffs_cache])
     H_cache = LazySum(coeffs_cache, Hterms)
     Htot = LazySum(H_cache, vdw)
-    function H!(t,psi)
+    function H!(t::Float64, psi::Ket)
         @inbounds for i=1:length(coeffs)
             c = coeffs[i](t)
             H_cache.factors[i] = c

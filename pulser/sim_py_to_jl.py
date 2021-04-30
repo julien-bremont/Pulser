@@ -266,7 +266,6 @@ class Simulation:
 
     # Run Simulation Evolution using Qutip
     def run(self, initial_state=None, progress_bar=None, spam=False, t=-1,
-            meas_basis="ground-rydberg",
             spam_dict={"eta": 0.005, "epsilon": 0.01, "epsilon_prime": 0.05},
             sampling_rate_result=10,
             **options):
@@ -282,9 +281,6 @@ class Simulation:
                 CleanResults one, taking into account SPAM errors.
             t (int): Time at which the results are to be returned ;
                 only used with noisy simulations.
-            meas_basis: Measurement basis : used with noisy simulations to
-                convert a ket in Hilbert space into a bitstring. Can be either
-                'ground-rydberg' or 'digital'.
             spam_dict: A dictionary containing SPAM error probabilities.
 
         Returns:
@@ -292,6 +288,10 @@ class Simulation:
                 Is a CleanResults object if spam = False, and a NoisyResults
                 one if spam = True.
         """
+        # we need this measurement basis to project states
+        meas_basis = 'digital' if (self.basis_name == 'digital' or
+                                   self.basis_name == 'all') \
+            else 'ground-rydberg'
         if spam:
             return NoisyResults(
                 self.detection_SPAM(spam_dict, t=t,
