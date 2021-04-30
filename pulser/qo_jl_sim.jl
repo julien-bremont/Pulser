@@ -15,13 +15,13 @@ function tensor_list(list)
     return result
 end
 
-function build_vdw(qdict, sigma_rr, U, qid_index, b, N)
+function build_vdw(qdict::Dict, sigma_rr::T, U::Float64, qid_index::Dict, b::CompositeBasis, N::Int64) where T<:AbstractOperator
     comb = combinations(collect(keys(qdict)), 2)
     terms = [(U / norm(qdict[q1] - qdict[q2])^6) * embed(b, [N - qid_index[q1], N - qid_index[q2]], [sigma_rr, sigma_rr]) for (q1, q2) ∈ comb]
     return Base.sum(terms)
 end
 
-function pulser_schroedinger(tspan, times_interp, psi0, terms, vdw, b)
+function pulser_schroedinger(tspan, times_interp, psi0, terms, vdw)
     function interp_terms()
         """
             Interpolate the given coefficients to plug them into the

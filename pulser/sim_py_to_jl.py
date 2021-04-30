@@ -283,8 +283,8 @@ class Simulation:
             t (int): Time at which the results are to be returned ;
                 only used with noisy simulations.
             meas_basis: Measurement basis : used with noisy simulations to
-                convert a ket in Hilbert space into a bitstring (for digital
-                basis).
+                convert a ket in Hilbert space into a bitstring. Can be either
+                'ground-rydberg' or 'digital'.
             spam_dict: A dictionary containing SPAM error probabilities.
 
         Returns:
@@ -313,7 +313,7 @@ class Simulation:
                                 self.basis_name, meas_basis)
         tout, psit = Main.pulser_schroedinger(
             self._times[0:-1:sampling_rate_result], self._times,
-            initial_state, self._terms, self.vdw_op, self.tensor_jl_basis)
+            initial_state, self._terms, self.vdw_op)
 
         return CleanResults(self.qo_to_qutip(psit), self.dim, self._size,
                             self.basis_name, meas_basis)
