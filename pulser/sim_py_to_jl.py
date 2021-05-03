@@ -267,7 +267,7 @@ class Simulation:
     # Run Simulation Evolution using Qutip
     def run(self, initial_state=None, progress_bar=None, spam=False, t=-1,
             spam_dict={"eta": 0.005, "epsilon": 0.01, "epsilon_prime": 0.05},
-            sampling_rate_result=10,
+            sampling_rate_result=1,
             **options):
         """Simulate the sequence using qo.jl's solvers.
 
