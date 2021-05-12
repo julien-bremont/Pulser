@@ -298,6 +298,14 @@ class Simulation:
             extracted from the effective sequence (determined by
             `self.sampling_rate`) at the specified time.
         """
+        # Construct the hamiltonian
+        self._extract_samples()
+        self._build_basis_and_op_matrices()
+        if 'initial_state' not in self._config:
+            all_ground = [self.basis['g'] for _ in range(self._size)]
+            self._config['initial_state'] = qutip.tensor(all_ground)
+        self._construct_hamiltonian()
+
         if time > 1000 * self._times[-1]:
             raise ValueError("Provided time is larger than sequence duration.")
         if time < 0:
