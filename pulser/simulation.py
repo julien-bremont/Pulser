@@ -71,7 +71,7 @@ class Simulation:
                         for addr in ['Global', 'Local']}
         self.operators = deepcopy(self.samples)
         self._noise = []
-
+        self._build_hamiltonian()
         self._init_config()
 
     def _extract_samples(self):
@@ -278,13 +278,10 @@ class Simulation:
         self._hamiltonian = ham
 
     def _init_config(self):
-        """Sets default configuration for the Simulation.
-
-        initial_state (array): The initial quantum state of the
-           evolution. Will be transformed into a
-           qutip.Qobj instance.
-        """
-        self._config = {'eval_t': -1, 'runs': 1, 'samples_per_run': 10}
+        """Sets default configuration for the Simulation."""
+        all_ground = qutip.tensor([self.basis['g'] for _ in range(self._size)])
+        self._config = {'eval_t': -1, 'runs': 1, 'samples_per_run': 10,
+                        'initial_state': all_ground}
 
     def get_hamiltonian(self, time):
         """Get the Hamiltonian created from the sequence at a fixed time.
@@ -298,13 +295,8 @@ class Simulation:
             extracted from the effective sequence (determined by
             `self.sampling_rate`) at the specified time.
         """
-        # Construct the hamiltonian
-        self._extract_samples()
-        self._build_basis_and_op_matrices()
-        if 'initial_state' not in self._config:
-            all_ground = [self.basis['g'] for _ in range(self._size)]
-            self._config['initial_state'] = qutip.tensor(all_ground)
-        self._construct_hamiltonian()
+        # Refresh the hamiltonian
+        self._build_hamiltonian()
 
         if time > 1000 * self._times[-1]:
             raise ValueError("Provided time is larger than sequence duration.")
@@ -338,11 +330,12 @@ class Simulation:
         if noise_type == 'SPAM':
             # Set SPAM parameters (experimental)
             self.init_spam()
+            self._prepare_spam_detune()
         if noise_type == 'doppler':
             self.init_doppler_sigma()
         # Register added noise(s)
         self._noise.append(noise_type)
-        # Reset any previously sequence:
+        # Reset any previous sequence:
         self.reset_sequence()
 
     def remove_all_noise(self):
@@ -402,15 +395,13 @@ class Simulation:
 
         else:
             if parameter == 'initial_state':
-                if isinstance(parameter, qutip.Qobj):
-                    if parameter.shape != (self.dim**self._size, 1):
+                if isinstance(value, qutip.Qobj):
+                    if value.shape != (self.dim**self._size, 1):
                         raise ValueError("Incompatible shape of initial_state")
-                    self._initial_state = parameter
                 else:
-                    if parameter.shape != (self.dim**self._size,):
+                    if value.shape != (self.dim**self._size,):
                         raise ValueError("Incompatible shape of initial_state")
-                    self._initial_state = qutip.Qobj(parameter)
-            self._config[parameter] = value
+            self._config[parameter] = qutip.Qobj(value)
 
     def show_config(self):
         print(self._config)
@@ -418,6 +409,13 @@ class Simulation:
     def reset_config(self):
         self._init_config()
         print('Configuration has been set to default')
+
+    def _build_hamiltonian(self):
+        """Extracts the sequence samples, builds default operators and
+        builds the hamiltonian from those coefficients and operators."""
+        self._extract_samples()
+        self._build_basis_and_op_matrices()
+        self._construct_hamiltonian()
 
     # Run Simulation Evolution using Qutip
     def run(self, t_list=None, progress_bar=None, **options):
@@ -443,20 +441,12 @@ class Simulation:
                 else:
                     return 'ground-rydberg'
 
-        def _build_hamiltonian():
-            self._extract_samples()
-            self._build_basis_and_op_matrices()
-            if 'initial_state' not in self._config:
-                all_ground = [self.basis['g'] for _ in range(self._size)]
-                self._config['initial_state'] = qutip.tensor(all_ground)
-            self._construct_hamiltonian()
-
         def _run_solver(t_list=None, as_subroutine=False,
                         measurement_basis=None):
             if not as_subroutine:
                 # CLEAN SIMULATION:
                 # Build (clean) hamiltonian
-                _build_hamiltonian()
+                self._build_hamiltonian()
                 measurement_basis = _assign_meas_basis()
 
             time_list = t_list if t_list else self._times
@@ -479,7 +469,7 @@ class Simulation:
                 # At each run, new random noise
                 if 'SPAM' in self._noise:
                     self._prepare_spam_detune()
-                _build_hamiltonian()
+                self._build_hamiltonian()
                 meas_basis = _assign_meas_basis()
                 # Get CleanResults instance from sequence with added noise:
                 res_with_noise = _run_solver(as_subroutine=True,
